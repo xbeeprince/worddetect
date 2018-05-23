@@ -1,274 +1,81 @@
 # encoding: utf-8
 import tensorflow as tf
-import csv 
 import numpy as np
+import DataModel
+from DataModelSet import DataModelSet
+import ImageIO
+from HedNetModel import HedNetModel
 
-train_image_path = "train_data/image_data/"
-train_label_path = "train_data/label_data/"
 
-def read_image_file(imagepath):
-	file_content = tf.read_file(imagepath)
-	image_content = tf.image.decode_jpeg(file_content,channels=3)
+def class_balanced_sigmoid_cross_entropy(logits, label, name='cross_entropy_loss'):
+    """
+    The class-balanced cross entropy loss,
+    as in `Holistically-Nested Edge Detection
+    <http://arxiv.org/abs/1504.06375>`_.
+    This is more numerically stable than class_balanced_cross_entropy
+
+    :param logits: size: the logits.
+    :param label: size: the ground truth in {0,1}, of the same shape as logits.
+    :returns: a scalar. class-balanced cross entropy loss
+    """
+    y = tf.cast(label, tf.float32)
+
+    count_neg = tf.reduce_sum(1. - y) # the number of 0 in y
+    count_pos = tf.reduce_sum(y) # the number of 1 in y (less than count_neg)
+    beta = count_neg / (count_neg + count_pos)
+
+    pos_weight = beta / (1 - beta)
+    cost = tf.nn.weighted_cross_entropy_with_logits(logits, y, pos_weight)
+    cost = tf.reduce_mean(cost * (1 - beta), name=name)
+    return cost
+
+
+def worddetect():
+	print "start run..."
+	filename = "train_data/image_label.csv"
+
+	dataModelSet = DataModelSet(ImageIO.read_image_label_model_file(filename))
+	print "num_examples : %d" %(dataModelSet.num_examples)
+
+	#dataModelpart = dataModelSet.next_batch(5)
+	#for dataModel in dataModelpart:
+	#	dataModel.discription()
+
+	epochs = 10000
+
+	# 输入变量,x为图像,y为标签
+	x = tf.placeholder(dtype=tf.float32, shape=[None, 224, 224,3], name='x')
+	y = tf.placeholder(dtype=tf.float32, shape=[None, 224, 224,1], name='y')
+	hedmodel = HedNetModel("vgg16.npy")
+	score = hedmodel.build(x,is_training = True)
+	print "score.shape : "
+	print score.shape
+	cost = class_balanced_sigmoid_cross_entropy(score,y)
+	accucy = 1 - cost;
+
+	# 建立会话
 	with tf.Session() as sess:
-		image = sess.run(image_content)
-		return image
+	# 初始化变量
+		sess.run(tf.global_variables_initializer())
+		for i in range(epochs):
+			print "training... "
+			# 批量数据,大小为5
+			tmpDataList = []
+			tmpLabelList = []
+			dataModelpart = dataModelSet.next_batch(5)
+			for tmpDataModel in dataModelpart:
+				tmpDataList.append(tmpDataModel.imageData)
+				tmpLabelList.append(tmpDataModel.labelData)
+			x_batch = np.array(tmpDataList)
+			y_batch = np.array(tmpLabelList)
 
-def read_label_file(labelpath):
-	file_content = tf.read_file(labelpath)
-	image_content = tf.image.decode_png(file_content,channels=1)
-	with tf.Session() as sess:
-		image = sess.run(image_content)
-    	return image
+			c = sess.run(cost, feed_dict={x:x_batch, y:y_batch})
+			print "cost:"
+			print c
 
-def read_image_label_file(csvfilename):
-	with open(csvfilename, 'r+') as csv_file:
-		reader = csv.reader(csv_file)
-		image_result=[]
-		label_result=[]
-		for row in reader:
-			imagepath = train_image_path + row[0]
-			labelpath = train_label_path + row[1]
-			image_data = read_image_file(imagepath)
-			label_data = read_label_file(labelpath)
-			image_result.append(image_data)
-			print "loading image [" + imagepath + " ]...\r\n"
-			label_result.append(label_data)
-			print "loading label [" + labelpath + " ]...\r\n"
-		return np.array(image_result),np.array(label_result)
-
-		
-class Dataset(object):
-	"""docstring for Dataset"""
-	def __init__(self, images,labels):
-		super(Dataset, self).__init__()
-		self._images = images
-		self._labels = labels
-		self._num_examples = images.shape[0]
-		self._index_epochs = 0
-		self._epochs_completed = 0
-
-	@property
-	def images(self):
-		return self._images
-	@property
-	def labels(self):
-		return self._labels
-	@property
-	def num_examples(self):
-		return self._num_examples
-	@property
-	def index_epochs(self):
-		return self._index_epochs
-	@property
-	def epochs_completed(self):
-		return self._epochs_completed
-	
-		
-	def next_batch(self,batch_size,shuffle=True):
-		"""Return the next `batch_size` examples from this data set."""
-		start = self._index_epochs
-		# Shuffle for the first epoch
-		if self._epochs_completed == 0 and start == 0 and shuffle:
-			perm0 = np.arange(self._num_examples)
-			np.random.shuffle(perm0)
-			self._images = self.images[perm0]
-			self._labels = self.labels[perm0]
-		else:
-			pass
-
-		# Go to the next epoch
-		if start + batch_size > self._num_examples:
-			# Finished epoch
-			self._epochs_completed += 1
-			rest_num_examples = self._num_examples - start
-			images_rest_part = self._images[start:self._num_examples]
-			labels_rest_part = self._labels[start:self._num_examples]
-
-			# Shuffle the data
-			if shuffle:
-				perm = np.arange(self._num_examples)
-				np.random.shuffle(perm)
-				self._images = self.images[perm]
-				self._labels = self.labels[perm]
-			else:
-				pass
-
-			# Start next epoch
-			start = 0
-			self._index_epochs = batch_size - rest_num_examples
-			end = self._index_epochs
-			images_new_part = self._images[start:end]
-			labels_new_part = self._labels[start:end]
-			return np.concatenate((images_rest_part, images_new_part), axis=0), np.concatenate((labels_rest_part, labels_new_part), axis=0)
-
-		else:
-			self._index_epochs += batch_size
-			end = self._index_epochs
-			return self._images[start:end],self._labels[start:end]
-
-class DataModel(object):
-	"""docstring for DataModel"""
-	def __init__(self, imageData,labelData,imagepath,labelpath):
-		super(DataModel, self).__init__()
-		self._imageData = imageData
-		self._labelData = labelData
-		self._imagepath = imagepath
-		self._labelpath = labelpath 
-
-	def discription(self):
-		print "imagepath" + " : " +self._imagepath
-		print "labelpath" + " : " +self._labelpath
-		print "imageData" + " : " 
-		print self._imageData
-		print "labelData" + " : "
-		print self._labelData
-
-def read_image_label_model_file(csvfilename):
-	with open(csvfilename, 'r+') as csv_file:
-		reader = csv.reader(csv_file)
-		model_result=[]
-		for row in reader:
-			imagepath = train_image_path + row[0]
-			labelpath = train_label_path + row[1]
-			image_data = read_image_file(imagepath)
-			label_data = read_label_file(labelpath)
-			dataModel = DataModel(image_data,label_data,imagepath,labelpath)
-			#dataModel.discription()
-			model_result.append(dataModel)
-		return np.array(model_result)
-
-class DataModelSet(object):
-	"""docstring for ClassName"""
-	def __init__(self, dataModel):
-		super(DataModelSet, self).__init__()
-		self._dataModel = dataModel
-		self._num_examples = dataModel.shape[0]
-		self._index_epochs = 0
-		self._epochs_completed = 0
-
-	@property
-	def dataModel(self):
-		return self._dataModel
-	@property
-	def num_examples(self):
-		return self._num_examples
-	@property
-	def index_epochs(self):
-		return self._index_epochs
-	@property
-	def epochs_completed(self):
-		return self._epochs_completed
-	def next_batch(self,batch_size,shuffle=True):
-		"""Return the next `batch_size` examples from this data set."""
-		start = self._index_epochs
-		# Shuffle for the first epoch
-		if self._epochs_completed == 0 and start == 0 and shuffle:
-			perm0 = np.arange(self._num_examples)
-			np.random.shuffle(perm0)
-			self._dataModel = self.dataModel[perm0]
-		else:
-			pass
-
-		# Go to the next epoch
-		if start + batch_size > self._num_examples:
-			# Finished epoch
-			self._epochs_completed += 1
-			rest_num_examples = self._num_examples - start
-			dataModel_rest_part = self._dataModel[start:self._num_examples]
-
-			# Shuffle the data
-			if shuffle:
-				perm = np.arange(self._num_examples)
-				np.random.shuffle(perm)
-				self._dataModel = self.dataModel[perm]
-			else:
-				pass
-
-			# Start next epoch
-			start = 0
-			self._index_epochs = batch_size - rest_num_examples
-			end = self._index_epochs
-			dataModel_new_part = self._dataModel[start:end]
-			return np.concatenate(dataModel_rest_part, dataModel_new_part)
-
-		else:
-			self._index_epochs += batch_size
-			end = self._index_epochs
-			return self._dataModel[start:end]
-
-print "start run..."
-filename = "train_data/image_label.csv"
-#image_result,label_result = read_image_label_file(filename)
-
-#dataset = Dataset(image_result,label_result)
-
-#image_result_part,label_result_part = dataset.next_batch(10)
-
-#print image_result_part
-#print label_result_part
+	print "stop run..."	
 
 
-dataModelSet = DataModelSet(read_image_label_model_file(filename))
-dataModelpart = dataModelSet.next_batch(5)
-for dataModel in dataModelpart:
-	dataModel.discription()
 
-
-print "stop run..."
-
-
-def hed_net(inputs, batch_size):
-    # ref https://github.com/s9xie/hed/blob/master/examples/hed/train_val.prototxt
-    with tf.variable_scope('hed', 'hed', [inputs]):
-        with slim.arg_scope([slim.conv2d, slim.fully_connected],
-                        activation_fn=tf.nn.relu,
-                        weights_initializer=tf.truncated_normal_initializer(0.0, 0.01),
-                        weights_regularizer=slim.l2_regularizer(0.0005)):
-            # vgg16 conv && max_pool layers
-            net = slim.repeat(inputs, 2, slim.conv2d, 12, [3, 3], scope='conv1')
-            dsn1 = net
-            net = slim.max_pool2d(net, [2, 2], scope='pool1')
-
-            net = slim.repeat(net, 2, slim.conv2d, 24, [3, 3], scope='conv2')
-            dsn2 = net
-            net = slim.max_pool2d(net, [2, 2], scope='pool2')
-
-            net = slim.repeat(net, 3, slim.conv2d, 48, [3, 3], scope='conv3')
-            dsn3 = net
-            net = slim.max_pool2d(net, [2, 2], scope='pool3')
-
-            net = slim.repeat(net, 3, slim.conv2d, 96, [3, 3], scope='conv4')
-            dsn4 = net
-            net = slim.max_pool2d(net, [2, 2], scope='pool4')
-
-            net = slim.repeat(net, 3, slim.conv2d, 192, [3, 3], scope='conv5')
-            dsn5 = net
-            # net = slim.max_pool2d(net, [2, 2], scope='pool5') # no need this pool layer
-
-            # dsn layers
-            dsn1 = slim.conv2d(dsn1, 1, [1, 1], scope='dsn1')
-            # no need deconv for dsn1
-
-            dsn2 = slim.conv2d(dsn2, 1, [1, 1], scope='dsn2')
-            deconv_shape = tf.pack([batch_size, const.image_height, const.image_width, 1])
-            dsn2 = deconv_mobile_version(dsn2, 2, deconv_shape) # deconv_mobile_version can work on mobile
-
-            dsn3 = slim.conv2d(dsn3, 1, [1, 1], scope='dsn3')
-            deconv_shape = tf.pack([batch_size, const.image_height, const.image_width, 1])
-            dsn3 = deconv_mobile_version(dsn3, 4, deconv_shape)
-
-            dsn4 = slim.conv2d(dsn4, 1, [1, 1], scope='dsn4')
-            deconv_shape = tf.pack([batch_size, const.image_height, const.image_width, 1])
-            dsn4 = deconv_mobile_version(dsn4, 8, deconv_shape)
-
-            dsn5 = slim.conv2d(dsn5, 1, [1, 1], scope='dsn5')
-            deconv_shape = tf.pack([batch_size, const.image_height, const.image_width, 1])
-            dsn5 = deconv_mobile_version(dsn5, 16, deconv_shape)
-
-            # dsn fuse
-            dsn_fuse = tf.concat(3, [dsn1, dsn2, dsn3, dsn4, dsn5])
-            dsn_fuse = tf.reshape(dsn_fuse, [batch_size, const.image_height, const.image_width, 5]) #without this, will get error: ValueError: Number of in_channels must be known.
-
-            dsn_fuse = slim.conv2d(dsn_fuse, 1, [1, 1], scope='dsn_fuse')
-
-    return dsn_fuse, dsn1, dsn2, dsn3, dsn4, dsn5
+if __name__ == '__main__':  
+	worddetect()
